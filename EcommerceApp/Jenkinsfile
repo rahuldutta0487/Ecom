@@ -1,0 +1,116 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven 3.8.x' // Name must match configured Maven installation in Jenkins
+        jdk 'Java 11'       // Name must match configured JDK installation in Jenkins
+    }
+
+    environment {
+        // SonarQube Server Connection name registered in Jenkins System Configuration
+        SONAR_SERVER_NAME = 'SonarQube' 
+        
+        // Credentials ID managed inside Jenkins Credentials Store
+        ANSIBLE_CREDENTIALS_ID = 'ansible-ssh-key'
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                echo 'Checking out source repository...'
+                checkout scm
+            }
+        }
+
+        stage('Code Quality Analysis') {
+            steps {
+                echo 'Running SonarQube Static Application Security Testing (SAST)...'
+                // Inject SonarQube environment variables (Server URL, Auth Token)
+                withSonarQubeEnv("${env.SONAR_SERVER_NAME}") {
+                    // Execute maven build to compile and trigger Sonar scanner
+                    sh 'mvn clean compile sonar:sonar -f EcommerceApp/pom.xml'
+                }
+            }
+        }
+
+        stage('Quality Gate Validation') {
+            steps {
+                echo 'Validating SonarQube Quality Gate...'
+                // Pause pipeline and wait for SonarQube Webhook to report Quality Gate status
+                timeout(time: 10, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted: Quality Gate failed with status ${qg.status}"
+                        }
+                        echo "Quality Gate PASSED successfully!"
+                    }
+                }
+            }
+        }
+
+        stage('Package Application') {
+            steps {
+                echo 'Running tests and packaging J2EE WAR artifact...'
+                sh 'mvn package -DskipTests=false -f EcommerceApp/pom.xml'
+            }
+            post {
+                success {
+                    echo 'Archiving build artifacts...'
+                    archiveArtifacts artifacts: 'EcommerceApp/target/*.war', allowEmptyArchive: false
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                echo 'Triggering automated deployment to Staging environment...'
+                script {
+                    // Invoke Ansible plugin to execute deploy playbook targeting staging
+                    ansiblePlaybook(
+                        playbook: 'deploy.yml',
+                        inventory: 'hosts.ini',
+                        credentialsId: "${env.ANSIBLE_CREDENTIALS_ID}",
+                        limit: 'staging',
+                        colorized: true
+                    )
+                }
+            }
+        }
+
+        stage('Promote to Production') {
+            // Manual gating requirement for Production release
+            input {
+                message "Promote build #${env.BUILD_NUMBER} and deploy to Production?"
+                ok "Approve and Release"
+                submitter "release-managers"
+            }
+            steps {
+                echo 'Triggering automated deployment to Production environment...'
+                script {
+                    // Invoke Ansible playbook targeting production servers
+                    ansiblePlaybook(
+                        playbook: 'deploy.yml',
+                        inventory: 'hosts.ini',
+                        credentialsId: "${env.ANSIBLE_CREDENTIALS_ID}",
+                        limit: 'production',
+                        colorized: true
+                    )
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Performing post-execution workspace cleanup...'
+            cleanWs()
+        }
+        success {
+            echo 'CI/CD pipeline completed successfully.'
+        }
+        failure {
+            echo 'CI/CD pipeline failed. Initiating alerts...'
+        }
+    }
+}

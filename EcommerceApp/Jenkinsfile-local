@@ -1,0 +1,61 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven 3.8.x' // Name must match configured Maven installation in Jenkins
+        jdk 'Java 11'       // Name must match configured JDK installation in Jenkins
+    }
+
+    environment {
+        // SonarQube Server Connection name registered in Jenkins System Configuration
+        SONAR_SERVER_NAME = 'SonarQube' 
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                echo 'Checking out source repository...'
+                checkout scm
+            }
+        }
+
+        stage('Code Quality Analysis') {
+            steps {
+                echo 'Running SonarQube Static Application Security Testing (SAST)...'
+                withSonarQubeEnv("${env.SONAR_SERVER_NAME}") {
+                    sh 'mvn clean compile sonar:sonar -f EcommerceApp/pom.xml'
+                }
+            }
+        }
+
+        stage('Quality Gate Validation') {
+            steps {
+                echo 'Validating SonarQube Quality Gate...'
+                timeout(time: 10, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted: Quality Gate failed with status ${qg.status}"
+                        }
+                        echo "Quality Gate PASSED successfully!"
+                    }
+                }
+            }
+        }
+
+        stage('Package Application') {
+            steps {
+                echo 'Running tests and packaging J2EE WAR artifact...'
+                sh 'mvn package -DskipTests=false -f EcommerceApp/pom.xml'
+            }
+        }
+
+        stage('Deploy Locally') {
+            steps {
+                echo 'Deploying application directly into the local Tomcat container...'
+                // Run Ansible Playbook using hosts-local.ini which connects via Docker socket
+                sh 'ansible-playbook -i hosts-local.ini deploy.yml'
+            }
+        }
+    }
+}

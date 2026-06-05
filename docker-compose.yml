@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # Jenkins Controller (CI/CD Platform & Build System)
+  jenkins:
+    build:
+      context: .
+      dockerfile: jenkins.Dockerfile
+    container_name: jenkins_local
+    ports:
+      - "8085:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      # Bind mounting docker socket so Jenkins can control other containers if needed
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - devops_net
+
+  # SonarQube (Code Quality Server)
+  sonarqube:
+    image: sonarqube:community
+    container_name: sonarqube_local
+    ports:
+      - "9005:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - devops_net
+
+  # Tomcat Server (Application Server Node)
+  tomcat:
+    build:
+      context: .
+      dockerfile: tomcat.Dockerfile
+    container_name: tomcat_local
+    ports:
+      - "8087:8080"
+    networks:
+      - devops_net
+
+volumes:
+  jenkins_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+
+networks:
+  devops_net:
+    driver: bridge
