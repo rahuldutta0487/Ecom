@@ -1,17 +1,18 @@
 ---
 - name: Deploy Ecommerce J2EE Application to Tomcat
   hosts: ecommerce_servers
-  become: yes
+  become: "{{ ansible_become | default(false) }}"
+
   vars:
-    tomcat_service: tomcat
-    tomcat_webapps_dir: /opt/tomcat/webapps
-    tomcat_owner: tomcat
-    tomcat_group: tomcat
+    tomcat_service: dummy
+    tomcat_webapps_dir: /usr/local/tomcat/webapps
+    tomcat_owner: root
+    tomcat_group: root
     app_name: EcommerceApp
     artifact_src_path: "./EcommerceApp/target/{{ app_name }}.war"
-    backup_dir: /opt/tomcat/backups
+    backup_dir: /usr/local/tomcat/backups
     app_port: 8080
-    health_check_url: "http://localhost:{{ app_port }}/{{ app_name }}/"
+    health_check_url: "http://localhost:8080/{{ app_name }}/"
     health_check_timeout: 60
 
   tasks:
@@ -39,13 +40,7 @@
       when: current_war.stat.exists
       register: backup_completed
 
-    - name: Stop Tomcat service
-      systemd:
-        name: "{{ tomcat_service }}"
-        state: stopped
-      when: tomcat_service != 'dummy'
-
-    - name: Remove existing deployment files (WAR and Exploded Dir)
+    - name: Remove existing deployment files
       file:
         path: "{{ item }}"
         state: absent
@@ -61,12 +56,6 @@
         group: "{{ tomcat_group }}"
         mode: '0644'
 
-    - name: Start Tomcat service
-      systemd:
-        name: "{{ tomcat_service }}"
-        state: started
-      when: tomcat_service != 'dummy'
-
     - name: Wait for application to expand and initialize
       uri:
         url: "{{ health_check_url }}"
@@ -77,59 +66,7 @@
       delay: 6
       ignore_errors: yes
 
-    - name: Handle Deployment Failure (Rollback)
-      block:
-        - name: Print deployment failure message
-          debug:
-            msg: "Application health check failed! Initiating rollback to previous version."
-
-        - name: Stop Tomcat service for rollback
-          systemd:
-            name: "{{ tomcat_service }}"
-            state: stopped
-          when: tomcat_service != 'dummy'
-
-        - name: Remove failed deployment
-          file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-            - "{{ tomcat_webapps_dir }}/{{ app_name }}"
-
-        - name: Restore backup WAR artifact
-          copy:
-            src: "{{ backup_dir }}/{{ app_name }}.war.bak"
-            dest: "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-            remote_src: yes
-            owner: "{{ tomcat_owner }}"
-            group: "{{ tomcat_group }}"
-            mode: '0644'
-          when: backup_completed is changed
-
-        - name: Restart Tomcat service with restored artifact
-          systemd:
-            name: "{{ tomcat_service }}"
-            state: started
-          when: tomcat_service != 'dummy'
-
-        - name: Verify restored application health
-          uri:
-            url: "{{ health_check_url }}"
-            status_code: 200
-          register: rollback_status
-          until: rollback_status.status == 200
-          retries: 5
-          delay: 5
-
-        - name: Fail the deployment play
-          fail:
-            msg: "Deployment failed, but successfully rolled back to the previous stable version."
-      when: app_status.status != 200 and backup_completed is changed
-
-    - name: Clean up backup if deployment succeeded
-      file:
-        path: "{{ backup_dir }}/{{ app_name }}.war.bak"
-        state: absent
-      when: app_status.status == 200 and backup_completed is changed
-...
+    - name: Fail if application health check failed
+      fail:
+        msg: "Deployment failed. Application health check did not return 200."
+      when: app_status.status != 200
