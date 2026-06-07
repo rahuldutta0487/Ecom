@@ -1,72 +1,44 @@
 ---
-- name: Deploy Ecommerce J2EE Application to Tomcat
-  hosts: ecommerce_servers
-  become: "{{ ansible_become | default(false) }}"
-
-  vars:
-    tomcat_service: dummy
-    tomcat_webapps_dir: /usr/local/tomcat/webapps
-    tomcat_owner: root
-    tomcat_group: root
-    app_name: EcommerceApp
-    artifact_src_path: "./EcommerceApp/target/{{ app_name }}.war"
-    backup_dir: /usr/local/tomcat/backups
-    app_port: 8080
-    health_check_url: "http://localhost:8080/{{ app_name }}/"
-    health_check_timeout: 60
+- name: Deploy Ecommerce WAR to Tomcat
+  hosts: tomcat
+  become: yes
 
   tasks:
-    - name: Ensure backup directory exists
+    - name: Stop Tomcat
+      systemd:
+        name: tomcat
+        state: stopped
+
+    - name: Remove old Ecommerce app
       file:
-        path: "{{ backup_dir }}"
-        state: directory
-        owner: "{{ tomcat_owner }}"
-        group: "{{ tomcat_group }}"
-        mode: '0755'
-
-    - name: Check if current application deployment exists
-      stat:
-        path: "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-      register: current_war
-
-    - name: Backup existing artifact
-      copy:
-        src: "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-        dest: "{{ backup_dir }}/{{ app_name }}.war.bak"
-        remote_src: yes
-        owner: "{{ tomcat_owner }}"
-        group: "{{ tomcat_group }}"
-        mode: '0644'
-      when: current_war.stat.exists
-      register: backup_completed
-
-    - name: Remove existing deployment files
-      file:
-        path: "{{ item }}"
+        path: /usr/local/tomcat/webapps/EcommerceApp
         state: absent
-      loop:
-        - "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-        - "{{ tomcat_webapps_dir }}/{{ app_name }}"
 
-    - name: Deploy new WAR artifact
+    - name: Remove old WAR
+      file:
+        path: /usr/local/tomcat/webapps/EcommerceApp.war
+        state: absent
+
+    - name: Copy new WAR to Tomcat
       copy:
-        src: "{{ artifact_src_path }}"
-        dest: "{{ tomcat_webapps_dir }}/{{ app_name }}.war"
-        owner: "{{ tomcat_owner }}"
-        group: "{{ tomcat_group }}"
+        src: EcommerceApp/target/EcommerceApp.war
+        dest: /usr/local/tomcat/webapps/EcommerceApp.war
+        owner: tomcat
+        group: tomcat
         mode: '0644'
 
-    - name: Wait for application to expand and initialize
-      uri:
-        url: "{{ health_check_url }}"
-        status_code: 200
-      register: app_status
-      until: app_status.status == 200
-      retries: 10
-      delay: 6
-      ignore_errors: yes
+    - name: Start Tomcat
+      systemd:
+        name: tomcat
+        state: started
 
-    - name: Fail if application health check failed
-      fail:
-        msg: "Deployment failed. Application health check did not return 200."
-      when: app_status.status != 200
+    - name: Wait for Tomcat
+      wait_for:
+        port: 8082
+        delay: 10
+        timeout: 60
+
+    - name: Validate app
+      uri:
+        url: http://localhost:8082/EcommerceApp/
+        status_code: 200
