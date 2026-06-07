@@ -1,0 +1,251 @@
+---
+# ==============================================================================
+# PLAY 1: PROVISION JENKINS (CI/CD ORCHESTRATOR)
+# ==============================================================================
+- name: Provision Jenkins Server
+  hosts: jenkins
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install dependencies (Java 21, git, maven)
+      apt:
+        name:
+          - openjdk-21-jdk
+          - git
+          - maven
+          - curl
+          - gnupg
+        state: present
+
+    - name: Add Jenkins repository key
+      apt_key:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        state: present
+
+    - name: Add Jenkins Debian package repository
+      apt_repository:
+        repo: deb https://pkg.jenkins.io/debian-stable binary/
+        state: present
+        filename: jenkins
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Jenkins service
+      systemd:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Output initial admin password path
+      debug:
+        msg: "Run 'cat /var/lib/jenkins/secrets/initialAdminPassword' on the Jenkins VM to get the unlock password."
+
+# ==============================================================================
+# PLAY 2: PROVISION SONARQUBE (CODE QUALITY PLATFORM)
+# ==============================================================================
+- name: Provision SonarQube Server
+  hosts: sonarqube
+  become: yes
+  tasks:
+    - name: Configure kernel parameters for Elasticsearch (sysctl)
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: 'vm.max_map_count', value: '524288' }
+        - { name: 'fs.file-max', value: '131072' }
+
+    - name: Install JDK 17 (Required by SonarQube 10+)
+      apt:
+        name:
+          - openjdk-17-jdk
+          - unzip
+        state: present
+
+    - name: Create sonar system group
+      group:
+        name: sonar
+        state: present
+
+    - name: Create sonar system user
+      user:
+        name: sonar
+        group: sonar
+        system: yes
+        home: /opt/sonarqube
+
+    - name: Download SonarQube Community Edition
+      get_url:
+        url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.4.1.88267.zip
+        dest: /tmp/sonarqube.zip
+
+    - name: Unzip SonarQube archive
+      unarchive:
+        src: /tmp/sonarqube.zip
+        dest: /opt/
+        remote_src: yes
+        owner: sonar
+        group: sonar
+
+    - name: Rename SonarQube directory to standard path
+      command: mv /opt/sonarqube-10.4.1.88267 /opt/sonarqube
+      args:
+        creates: /opt/sonarqube
+
+    - name: Set permissions on SonarQube directory
+      file:
+        path: /opt/sonarqube
+        state: directory
+        owner: sonar
+        group: sonar
+        recurse: yes
+
+    - name: Create SonarQube systemd service file
+      copy:
+        dest: /etc/systemd/system/sonarqube.service
+        content: |
+          [Unit]
+          Description=SonarQube service
+          After=syslog.target network.target
+
+          [Service]
+          Type=forking
+          ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+          ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+          User=sonar
+          Group=sonar
+          Restart=on-failure
+          LimitNOFILE=65536
+          LimitNPROC=4096
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon, start and enable SonarQube
+      systemd:
+        name: sonarqube
+        daemon_reload: yes
+        state: started
+        enabled: yes
+
+# ==============================================================================
+# PLAY 3: PROVISION TOMCAT (APPLICATION SERVER)
+# ==============================================================================
+- name: Provision Tomcat Application Server
+  hosts: tomcat
+  become: yes
+  tasks:
+    - name: Install Java 11 (Required for J2EE target)
+      apt:
+        name:
+          - openjdk-11-jdk
+        state: present
+
+    - name: Create tomcat group
+      group:
+        name: tomcat
+        state: present
+
+    - name: Create tomcat user
+      user:
+        name: tomcat
+        group: tomcat
+        home: /usr/local/tomcat
+        shell: /bin/false
+
+    - name: Download Apache Tomcat 9
+      get_url:
+        url: https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.83/bin/apache-tomcat-9.0.83.tar.gz
+        dest: /tmp/tomcat.tar.gz
+
+    - name: Create tomcat installation directory
+      file:
+        path: /usr/local/tomcat
+        state: directory
+        owner: tomcat
+        group: tomcat
+
+    - name: Extract Tomcat archive
+      unarchive:
+        src: /tmp/tomcat.tar.gz
+        dest: /usr/local/tomcat
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+        owner: tomcat
+        group: tomcat
+
+    - name: Configure Tomcat manager permissions (Remove Remote IP limits)
+      copy:
+        dest: "{{ item }}"
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Context antiResourceLocking="false" privileged="true" >
+            <CookieProcessor className="org.apache.tomcat.util.http.Rfc6265CookieProcessor"
+                             sameSiteCookies="strict" />
+          </Context>
+        owner: tomcat
+        group: tomcat
+      loop:
+        - /usr/local/tomcat/webapps/manager/META-INF/context.xml
+        - /usr/local/tomcat/webapps/host-manager/META-INF/context.xml
+
+    - name: Configure tomcat-users.xml credentials and roles
+      copy:
+        dest: /usr/local/tomcat/conf/tomcat-users.xml
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <tomcat-users xmlns="http://tomcat.apache.org/xml"
+                        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                        xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd"
+                        version="1.0">
+            <role rolename="manager-gui"/>
+            <role rolename="manager-script"/>
+            <role rolename="admin-gui"/>
+            <user username="tomcat" password="s3cretpassword" roles="manager-gui,manager-script,admin-gui"/>
+          </tomcat-users>
+        owner: tomcat
+        group: tomcat
+
+    - name: Configure Tomcat systemd service
+      copy:
+        dest: /etc/systemd/system/tomcat.service
+        content: |
+          [Unit]
+          Description=Apache Tomcat Web Application Container
+          After=syslog.target network.target
+
+          [Service]
+          Type=forking
+
+          Environment=JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+          Environment=CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid
+          Environment=CATALINA_HOME=/usr/local/tomcat
+          Environment=CATALINA_BASE=/usr/local/tomcat
+
+          ExecStart=/usr/local/tomcat/bin/startup.sh
+          ExecStop=/usr/local/tomcat/bin/shutdown.sh
+
+          User=tomcat
+          Group=tomcat
+          UMask=0007
+          RestartSec=10
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload daemon and start Tomcat
+      systemd:
+        name: tomcat
+        daemon_reload: yes
+        state: started
+        enabled: yes
