@@ -1,18 +1,22 @@
 ---
 # ==============================================================================
-# PLAY 1: PROVISION JENKINS (CI/CD ORCHESTRATOR)
+# PLAY 1: PROVISION JENKINS
 # ==============================================================================
 - name: Provision Jenkins Server
   hosts: jenkins
   become: yes
+
   tasks:
-    - name: Install dependencies (Java 17 Corretto, git, maven, wget)
+    - name: Install Jenkins dependencies
       yum:
         name:
+          - java-21-amazon-corretto-devel
           - java-17-amazon-corretto-devel
+          - java-11-amazon-corretto-devel
           - git
           - maven
           - wget
+          - unzip
         state: present
 
     - name: Download Jenkins RedHat repository file
@@ -33,24 +37,34 @@
         name: jenkins
         state: present
 
+    - name: Force Jenkins to use Java 21
+      copy:
+        dest: /etc/systemd/system/jenkins.service.d/override.conf
+        content: |
+          [Service]
+          Environment="JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto.x86_64"
+          Environment="JENKINS_JAVA_CMD=/usr/lib/jvm/java-21-amazon-corretto.x86_64/bin/java"
+
     - name: Start and enable Jenkins service
       systemd:
         name: jenkins
+        daemon_reload: yes
         state: started
         enabled: yes
 
-    - name: Output initial admin password path
+    - name: Output Jenkins initial password path
       debug:
-        msg: "Run 'sudo cat /var/lib/jenkins/secrets/initialAdminPassword' on the Jenkins VM to get the unlock password."
+        msg: "Jenkins password: sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
 
 # ==============================================================================
-# PLAY 2: PROVISION SONARQUBE (CODE QUALITY PLATFORM)
+# PLAY 2: PROVISION SONARQUBE
 # ==============================================================================
 - name: Provision SonarQube Server
   hosts: sonarqube
   become: yes
+
   tasks:
-    - name: Configure kernel parameters for Elasticsearch (sysctl)
+    - name: Configure kernel parameters for Elasticsearch
       sysctl:
         name: "{{ item.name }}"
         value: "{{ item.value }}"
@@ -60,31 +74,43 @@
         - { name: 'vm.max_map_count', value: '524288' }
         - { name: 'fs.file-max', value: '131072' }
 
-    - name: Install JDK 17 (Required by SonarQube 10+)
+    - name: Install SonarQube dependencies
       yum:
         name:
           - java-17-amazon-corretto-devel
           - unzip
+          - wget
         state: present
 
-    - name: Create sonar system group
+    - name: Create sonar group
       group:
         name: sonar
         state: present
 
-    - name: Create sonar system user
+    - name: Create sonar user
       user:
         name: sonar
         group: sonar
         system: yes
-        home: /opt/sonarqube
+        home: /home/sonar
+        shell: /bin/bash
 
-    - name: Download SonarQube Community Edition
+    - name: Download SonarQube
       get_url:
         url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.4.1.88267.zip
         dest: /tmp/sonarqube.zip
 
-    - name: Unzip SonarQube archive
+    - name: Remove old SonarQube directory
+      file:
+        path: /opt/sonarqube
+        state: absent
+
+    - name: Remove old extracted SonarQube directory
+      file:
+        path: /opt/sonarqube-10.4.1.88267
+        state: absent
+
+    - name: Extract SonarQube
       unarchive:
         src: /tmp/sonarqube.zip
         dest: /opt/
@@ -92,12 +118,12 @@
         owner: sonar
         group: sonar
 
-    - name: Rename SonarQube directory to standard path
+    - name: Rename SonarQube directory
       command: mv /opt/sonarqube-10.4.1.88267 /opt/sonarqube
       args:
-        creates: /opt/sonarqube
+        creates: /opt/sonarqube/bin/linux-x86-64/sonar.sh
 
-    - name: Set permissions on SonarQube directory
+    - name: Set SonarQube permissions
       file:
         path: /opt/sonarqube
         state: directory
@@ -105,7 +131,7 @@
         group: sonar
         recurse: yes
 
-    - name: Create SonarQube systemd service file
+    - name: Create SonarQube systemd service
       copy:
         dest: /etc/systemd/system/sonarqube.service
         content: |
@@ -115,10 +141,12 @@
 
           [Service]
           Type=forking
-          ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
-          ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
           User=sonar
           Group=sonar
+          Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
+          Environment="SONAR_JAVA_PATH=/usr/lib/jvm/java-17-amazon-corretto.x86_64/bin/java"
+          ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+          ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
           Restart=on-failure
           LimitNOFILE=65536
           LimitNPROC=4096
@@ -126,7 +154,7 @@
           [Install]
           WantedBy=multi-user.target
 
-    - name: Reload systemd daemon, start and enable SonarQube
+    - name: Start and enable SonarQube
       systemd:
         name: sonarqube
         daemon_reload: yes
@@ -134,16 +162,18 @@
         enabled: yes
 
 # ==============================================================================
-# PLAY 3: PROVISION TOMCAT (APPLICATION SERVER)
+# PLAY 3: PROVISION TOMCAT
 # ==============================================================================
 - name: Provision Tomcat Application Server
   hosts: tomcat
   become: yes
+
   tasks:
-    - name: Install Java 11 (Required for J2EE target)
+    - name: Install Tomcat dependencies
       yum:
         name:
           - java-11-amazon-corretto-devel
+          - wget
         state: present
 
     - name: Create tomcat group
@@ -163,7 +193,12 @@
         url: https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.83/bin/apache-tomcat-9.0.83.tar.gz
         dest: /tmp/tomcat.tar.gz
 
-    - name: Create tomcat installation directory
+    - name: Remove old Tomcat directory
+      file:
+        path: /usr/local/tomcat
+        state: absent
+
+    - name: Create Tomcat installation directory
       file:
         path: /usr/local/tomcat
         state: directory
@@ -185,7 +220,7 @@
         regexp: 'Connector port="8080"'
         replace: 'Connector port="8082"'
 
-    - name: Configure Tomcat manager permissions (Remove Remote IP limits)
+    - name: Configure Tomcat manager access
       copy:
         dest: "{{ item }}"
         content: |
@@ -200,7 +235,7 @@
         - /usr/local/tomcat/webapps/manager/META-INF/context.xml
         - /usr/local/tomcat/webapps/host-manager/META-INF/context.xml
 
-    - name: Configure tomcat-users.xml credentials and roles
+    - name: Configure Tomcat users
       copy:
         dest: /usr/local/tomcat/conf/tomcat-users.xml
         content: |
@@ -217,6 +252,16 @@
         owner: tomcat
         group: tomcat
 
+    - name: Set Tomcat permissions
+      file:
+        path: /usr/local/tomcat
+        owner: tomcat
+        group: tomcat
+        recurse: yes
+
+    - name: Make Tomcat scripts executable
+      shell: chmod +x /usr/local/tomcat/bin/*.sh
+
     - name: Configure Tomcat systemd service
       copy:
         dest: /etc/systemd/system/tomcat.service
@@ -227,15 +272,12 @@
 
           [Service]
           Type=forking
-
-          Environment=JAVA_HOME=/usr/lib/jvm/java-11-amazon-corretto
+          Environment=JAVA_HOME=/usr/lib/jvm/java-11-amazon-corretto.x86_64
           Environment=CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid
           Environment=CATALINA_HOME=/usr/local/tomcat
           Environment=CATALINA_BASE=/usr/local/tomcat
-
           ExecStart=/usr/local/tomcat/bin/startup.sh
           ExecStop=/usr/local/tomcat/bin/shutdown.sh
-
           User=tomcat
           Group=tomcat
           UMask=0007
@@ -245,7 +287,7 @@
           [Install]
           WantedBy=multi-user.target
 
-    - name: Reload daemon and start Tomcat
+    - name: Start and enable Tomcat
       systemd:
         name: tomcat
         daemon_reload: yes
