@@ -6,10 +6,10 @@
   hosts: jenkins
   become: yes
   tasks:
-    - name: Install dependencies (Java 21, git, maven, wget)
+    - name: Install dependencies (Java 17 Corretto, git, maven, wget)
       yum:
         name:
-          - java-21-openjdk-devel
+          - java-17-amazon-corretto-devel
           - git
           - maven
           - wget
@@ -63,7 +63,7 @@
     - name: Install JDK 17 (Required by SonarQube 10+)
       yum:
         name:
-          - java-17-openjdk-devel
+          - java-17-amazon-corretto-devel
           - unzip
         state: present
 
@@ -143,7 +143,7 @@
     - name: Install Java 11 (Required for J2EE target)
       yum:
         name:
-          - java-11-openjdk-devel
+          - java-11-amazon-corretto-devel
         state: present
 
     - name: Create tomcat group
@@ -228,7 +228,7 @@
           [Service]
           Type=forking
 
-          Environment=JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+          Environment=JAVA_HOME=/usr/lib/jvm/java-11-amazon-corretto
           Environment=CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid
           Environment=CATALINA_HOME=/usr/local/tomcat
           Environment=CATALINA_BASE=/usr/local/tomcat
