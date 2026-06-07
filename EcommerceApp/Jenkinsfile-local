@@ -54,7 +54,7 @@ pipeline {
             steps {
                 echo 'Deploying application directly into the local Tomcat container...'
                 // Run Ansible Playbook using hosts-local.ini which connects via Docker socket
-                sh 'ansible-playbook -i hosts-local.ini deploy.yml'
+                sh 'ansible-playbook -i hosts.ini deploy.yml'
             }
         }
     }
