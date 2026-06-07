@@ -183,6 +183,12 @@
         owner: tomcat
         group: tomcat
 
+    - name: Change Tomcat HTTP port to 8082
+      replace:
+        path: /usr/local/tomcat/conf/server.xml
+        regexp: 'Connector port="8080"'
+        replace: 'Connector port="8082"'
+
     - name: Configure Tomcat manager permissions (Remove Remote IP limits)
       copy:
         dest: "{{ item }}"
