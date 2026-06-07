@@ -137,7 +137,9 @@ pipeline {
             steps {
                 echo 'Running SonarQube analysis...'
                 withSonarQubeEnv("${env.SONAR_SERVER_NAME}") {
-                    sh 'mvn clean compile sonar:sonar -f EcommerceApp/pom.xml -DskipTests'
+                    withEnv(['MAVEN_OPTS=-Xmx384m -XX:+UseG1GC', 'SONAR_SCANNER_OPTS=-Xmx384m']) {
+                        sh 'mvn clean compile sonar:sonar -f EcommerceApp/pom.xml -DskipTests'
+                    }
                 }
             }
         }
@@ -154,7 +156,9 @@ pipeline {
         stage('Package Application') {
             steps {
                 echo 'Packaging WAR file...'
-                sh 'mvn clean package -f EcommerceApp/pom.xml -DskipTests'
+                withEnv(['MAVEN_OPTS=-Xmx384m -XX:+UseG1GC']) {
+                    sh 'mvn clean package -f EcommerceApp/pom.xml -DskipTests'
+                }
             }
             post {
                 success {

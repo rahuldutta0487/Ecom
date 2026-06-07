@@ -1,0 +1,171 @@
+---
+- name: Install and Configure Apache Tomcat (Application Server)
+  hosts: ecommerce_servers
+  become: yes
+
+  vars:
+    tomcat_version: "9.0.87"
+    tomcat_dir: /opt/tomcat
+    tomcat_owner: tomcat
+    tomcat_group: tomcat
+    tomcat_admin_user: tomcat
+    tomcat_admin_password: s3cretpassword
+    java_home: /usr/lib/jvm/java-11-openjdk-amd64
+    tomcat_tar_url: "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.87/bin/apache-tomcat-9.0.87.tar.gz"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Java JDK 11 and curl
+      apt:
+        name:
+          - openjdk-11-jdk
+          - curl
+          - tar
+        state: present
+
+    - name: Create tomcat group
+      group:
+        name: "{{ tomcat_group }}"
+        state: present
+
+    - name: Create tomcat system user
+      user:
+        name: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        home: "{{ tomcat_dir }}"
+        shell: /bin/false
+        state: present
+
+    - name: Check if Tomcat is already downloaded
+      stat:
+        path: "/tmp/apache-tomcat-{{ tomcat_version }}.tar.gz"
+      register: tomcat_tar
+
+    - name: Download Tomcat tarball
+      get_url:
+        url: "{{ tomcat_tar_url }}"
+        dest: "/tmp/apache-tomcat-{{ tomcat_version }}.tar.gz"
+      when: not tomcat_tar.stat.exists
+
+    - name: Create Tomcat installation directory
+      file:
+        path: "{{ tomcat_dir }}"
+        state: directory
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0755'
+
+    - name: Check if Tomcat binary files exist
+      stat:
+        path: "{{ tomcat_dir }}/bin/bootstrap.jar"
+      register: tomcat_bin
+
+    - name: Extract Tomcat archive
+      unarchive:
+        src: "/tmp/apache-tomcat-{{ tomcat_version }}.tar.gz"
+        dest: "{{ tomcat_dir }}"
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+      when: not tomcat_bin.stat.exists
+
+    - name: Set group ownership of conf directory
+      file:
+        path: "{{ tomcat_dir }}/conf"
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0750'
+        recurse: yes
+
+    - name: Grant read access to conf files
+      file:
+        path: "{{ tomcat_dir }}/conf/{{ item }}"
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0640'
+      loop:
+        - tomcat-users.xml
+        - web.xml
+        - server.xml
+        - context.xml
+
+    - name: Configure Tomcat Admin and Manager Users
+      template:
+        src: templates/tomcat-users.xml.j2
+        dest: "{{ tomcat_dir }}/conf/tomcat-users.xml"
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0640'
+      notify: restart tomcat
+
+    - name: Check if manager META-INF directory exists
+      stat:
+        path: "{{ tomcat_dir }}/webapps/manager/META-INF"
+      register: manager_meta
+
+    - name: Copy unrestricted context.xml for remote manager GUI access
+      copy:
+        src: context.xml
+        dest: "{{ tomcat_dir }}/webapps/manager/META-INF/context.xml"
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0644'
+      when: manager_meta.stat.exists
+      notify: restart tomcat
+
+    - name: Check if host-manager META-INF directory exists
+      stat:
+        path: "{{ tomcat_dir }}/webapps/host-manager/META-INF"
+      register: host_manager_meta
+
+    - name: Copy unrestricted context.xml for remote host-manager GUI access
+      copy:
+        src: context.xml
+        dest: "{{ tomcat_dir }}/webapps/host-manager/META-INF/context.xml"
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0644'
+      when: host_manager_meta.stat.exists
+      notify: restart tomcat
+
+    - name: Ensure work, temp, and logs write permissions for tomcat
+      file:
+        path: "{{ tomcat_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ tomcat_owner }}"
+        group: "{{ tomcat_group }}"
+        mode: '0750'
+        recurse: yes
+      loop:
+        - webapps
+        - work
+        - temp
+        - logs
+
+    - name: Configure Tomcat systemd service unit
+      template:
+        src: templates/tomcat.service.j2
+        dest: /etc/systemd/system/tomcat.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: tomcat_service_file
+
+    - name: Reload systemd configuration
+      systemd:
+        daemon_reload: yes
+      when: tomcat_service_file.changed
+
+    - name: Start and enable Tomcat service
+      systemd:
+        name: tomcat
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart tomcat
+      systemd:
+        name: tomcat
+        state: restarted

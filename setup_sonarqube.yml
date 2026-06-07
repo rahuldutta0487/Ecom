@@ -1,0 +1,197 @@
+---
+- name: Install and Configure SonarQube (Code Quality Server)
+  hosts: sonarqube
+  become: yes
+
+  vars:
+    sonar_version: "9.9.4.87374"
+    sonar_db_name: sonar
+    sonar_db_user: sonar
+    sonar_db_password: sonarsecretpassword
+    sonar_port: 9000
+    sonar_dir: /opt/sonarqube
+    sonar_zip_url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonar_version }}.zip"
+    sonar_data_dir: "{{ sonar_dir }}/data"
+    sonar_temp_dir: "{{ sonar_dir }}/temp"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install prerequisite packages (Java 17, PostgreSQL, zip tools)
+      apt:
+        name:
+          - openjdk-17-jdk
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+          - unzip
+          - wget
+        state: present
+
+    - name: Ensure PostgreSQL service is started and enabled
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create PostgreSQL user for SonarQube
+      postgresql_user:
+        name: "{{ sonar_db_user }}"
+        password: "{{ sonar_db_password }}"
+        state: present
+      become_user: postgres
+
+    - name: Create PostgreSQL database for SonarQube
+      postgresql_db:
+        name: "{{ sonar_db_name }}"
+        owner: "{{ sonar_db_user }}"
+        state: present
+      become_user: postgres
+
+    - name: Set vm.max_map_count for SonarQube Elasticsearch
+      sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        state: present
+        reload: yes
+
+    - name: Set fs.file-max limit
+      sysctl:
+        name: fs.file-max
+        value: '65536'
+        state: present
+        reload: yes
+
+    - name: Configure system pam limits for sonar user
+      pam_limits:
+        domain: sonar
+        limit_type: "{{ item.type }}"
+        limit_item: "{{ item.item }}"
+        value: "{{ item.value }}"
+      loop:
+        - { type: 'soft', item: 'nofile', value: '65536' }
+        - { type: 'hard', item: 'nofile', value: '65536' }
+        - { type: 'soft', item: 'nproc', value: '4096' }
+        - { type: 'hard', item: 'nproc', value: '4096' }
+
+    - name: Create dedicated sonar group
+      group:
+        name: sonar
+        state: present
+
+    - name: Create dedicated sonar system user
+      user:
+        name: sonar
+        group: sonar
+        home: "{{ sonar_dir }}"
+        shell: /bin/bash
+        state: present
+
+    - name: Check if SonarQube is already downloaded
+      stat:
+        path: "/tmp/sonarqube-{{ sonar_version }}.zip"
+      register: sonar_zip
+
+    - name: Download SonarQube zip package
+      get_url:
+        url: "{{ sonar_zip_url }}"
+        dest: "/tmp/sonarqube-{{ sonar_version }}.zip"
+      when: not sonar_zip.stat.exists
+
+    - name: Check if SonarQube binary dir exists
+      stat:
+        path: "{{ sonar_dir }}/bin"
+      register: sonar_bin_dir
+
+    - name: Extract SonarQube to temporary folder
+      unarchive:
+        src: "/tmp/sonarqube-{{ sonar_version }}.zip"
+        dest: "/opt"
+        remote_src: yes
+      when: not sonar_bin_dir.stat.exists
+
+    - name: Rename SonarQube directory to standard /opt/sonarqube
+      command: "mv /opt/sonarqube-{{ sonar_version }} {{ sonar_dir }}"
+      when: not sonar_bin_dir.stat.exists
+
+    - name: Create SonarQube data and temp directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: sonar
+        group: sonar
+        mode: '0755'
+      loop:
+        - "{{ sonar_data_dir }}"
+        - "{{ sonar_temp_dir }}"
+
+    - name: Ensure correct ownership of /opt/sonarqube
+      file:
+        path: "{{ sonar_dir }}"
+        state: directory
+        owner: sonar
+        group: sonar
+        recurse: yes
+
+    - name: Configure SonarQube properties file
+      template:
+        src: templates/sonar.properties.j2
+        dest: "{{ sonar_dir }}/conf/sonar.properties"
+        owner: sonar
+        group: sonar
+        mode: '0600'
+      register: sonar_config
+
+    - name: Create systemd service unit for SonarQube
+      copy:
+        dest: /etc/systemd/system/sonar.service
+        content: |
+          [Unit]
+          Description=SonarQube service
+          After=syslog.target network.target
+
+          [Service]
+          Type=forking
+          ExecStart={{ sonar_dir }}/bin/linux-x86-64/sonar.sh start
+          ExecStop={{ sonar_dir }}/bin/linux-x86-64/sonar.sh stop
+          LimitNOFILE=65536
+          LimitNPROC=4096
+          User=sonar
+          Group=sonar
+          Restart=on-failure
+          SuccessExitStatus=143
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+      register: sonar_service_file
+
+    - name: Reload systemd configuration
+      systemd:
+        daemon_reload: yes
+      when: sonar_service_file.changed
+
+    - name: Start and enable SonarQube service
+      systemd:
+        name: sonar
+        state: started
+        enabled: yes
+      register: sonar_start
+
+    - name: Wait for SonarQube to start up (HTTP 200)
+      uri:
+        url: "http://localhost:{{ sonar_port }}/"
+        status_code: 200
+      register: sonar_web
+      until: sonar_web.status == 200
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: Print Setup Confirmation
+      debug:
+        msg: "SonarQube setup complete! Accessible at http://<sonar-server-ip>:{{ sonar_port }}"

@@ -1,0 +1,11 @@
+---
+# Master Playbook for DevOps CI/CD Infrastructure Setup
+
+- name: Provision Jenkins CI/CD Controller
+  import_playbook: setup_jenkins.yml
+
+- name: Provision SonarQube Code Quality Server
+  import_playbook: setup_sonarqube.yml
+
+- name: Provision Tomcat Application Servers
+  import_playbook: setup_tomcat.yml

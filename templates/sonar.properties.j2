@@ -1,0 +1,19 @@
+# Database credentials
+sonar.jdbc.username={{ sonar_db_user }}
+sonar.jdbc.password={{ sonar_db_password }}
+
+# PostgreSQL connection string
+sonar.jdbc.url=jdbc:postgresql://localhost:5432/{{ sonar_db_name }}
+
+# Web settings
+sonar.web.host=0.0.0.0
+sonar.web.port={{ sonar_port | default(9000) }}
+
+# Path to data and temp directories
+sonar.path.data={{ sonar_data_dir }}
+sonar.path.temp={{ sonar_temp_dir }}
+
+# JVM Memory optimization for low-RAM hosts
+sonar.web.javaOpts=-Xmx256m -Xms64m
+sonar.search.javaOpts=-Xmx128m -Xms64m
+sonar.ce.javaOpts=-Xmx128m -Xms64m

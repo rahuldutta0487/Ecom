@@ -6,30 +6,25 @@
   hosts: all
   become: yes
   tasks:
-    - name: Check current swap space
-      command: free -m
-      register: swap_check
-      changed_when: false
-
     - name: Create 4GB swap file if no swap exists
       command: dd if=/dev/zero of=/swapfile bs=1M count=4096
       args:
         creates: /swapfile
-      when: "'Swap:            0' in swap_check.stdout"
+      when: ansible_facts['memory_mb']['swap']['total'] == 0
 
     - name: Set secure permissions on swap file
       file:
         path: /swapfile
         mode: '0600'
-      when: "'Swap:            0' in swap_check.stdout"
+      when: ansible_facts['memory_mb']['swap']['total'] == 0
 
     - name: Format swap file
       command: mkswap /swapfile
-      when: "'Swap:            0' in swap_check.stdout"
+      when: ansible_facts['memory_mb']['swap']['total'] == 0
 
     - name: Enable swap file
       command: swapon /swapfile
-      when: "'Swap:            0' in swap_check.stdout"
+      when: ansible_facts['memory_mb']['swap']['total'] == 0
 
     - name: Persist swap file in /etc/fstab
       mount:
@@ -38,7 +33,7 @@
         fstype: swap
         opts: sw
         state: present
-      when: "'Swap:            0' in swap_check.stdout"
+      when: ansible_facts['memory_mb']['swap']['total'] == 0
 
 # ==============================================================================
 # PLAY 2: PROVISION JENKINS
@@ -87,7 +82,7 @@
         dest: /etc/systemd/system/jenkins.service.d/override.conf
         content: |
           [Service]
-          Environment="JAVA_OPTS=-Xmx512m -Xms256m -XX:+UseG1GC"
+          Environment="JAVA_OPTS=-Xmx256m -Xms128m -XX:+UseG1GC"
           Environment="JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto.x86_64"
           Environment="JENKINS_JAVA_CMD=/usr/lib/jvm/java-21-amazon-corretto.x86_64/bin/java"
         owner: root
@@ -185,9 +180,9 @@
         regexp: "{{ item.regexp }}"
         replace: "{{ item.replace }}"
       loop:
-        - { regexp: '#sonar.web.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.web.javaOpts=-Xmx384m -Xms128m' }
-        - { regexp: '#sonar.search.javaOpts=-Xmx512m -Xms512m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.search.javaOpts=-Xmx256m -Xms128m' }
-        - { regexp: '#sonar.ce.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.ce.javaOpts=-Xmx256m -Xms128m' }
+        - { regexp: '#sonar.web.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.web.javaOpts=-Xmx256m -Xms64m' }
+        - { regexp: '#sonar.search.javaOpts=-Xmx512m -Xms512m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.search.javaOpts=-Xmx128m -Xms64m' }
+        - { regexp: '#sonar.ce.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.ce.javaOpts=-Xmx128m -Xms64m' }
 
     - name: Create SonarQube systemd service
       copy:
@@ -333,7 +328,7 @@
           Environment=CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid
           Environment=CATALINA_HOME=/usr/local/tomcat
           Environment=CATALINA_BASE=/usr/local/tomcat
-          Environment="CATALINA_OPTS=-Xmx512m -Xms256m -XX:+UseG1GC"
+          Environment="CATALINA_OPTS=-Xmx128m -Xms64m -XX:+UseG1GC"
           ExecStart=/usr/local/tomcat/bin/startup.sh
           ExecStop=/usr/local/tomcat/bin/shutdown.sh
           User=tomcat
