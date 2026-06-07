@@ -1,22 +1,59 @@
 ---
 # ==============================================================================
-# PLAY 1: PROVISION JENKINS
+# PLAY 1: INITIAL SYSTEM CONFIGURATION (SWAP AND SYSTEM TWEAKS)
+# ==============================================================================
+- name: Optimize System Memory and Swap
+  hosts: all
+  become: yes
+  tasks:
+    - name: Check current swap space
+      command: free -m
+      register: swap_check
+      changed_when: false
+
+    - name: Create 4GB swap file if no swap exists
+      command: dd if=/dev/zero of=/swapfile bs=1M count=4096
+      args:
+        creates: /swapfile
+      when: "'Swap:            0' in swap_check.stdout"
+
+    - name: Set secure permissions on swap file
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: "'Swap:            0' in swap_check.stdout"
+
+    - name: Format swap file
+      command: mkswap /swapfile
+      when: "'Swap:            0' in swap_check.stdout"
+
+    - name: Enable swap file
+      command: swapon /swapfile
+      when: "'Swap:            0' in swap_check.stdout"
+
+    - name: Persist swap file in /etc/fstab
+      mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        state: present
+      when: "'Swap:            0' in swap_check.stdout"
+
+# ==============================================================================
+# PLAY 2: PROVISION JENKINS
 # ==============================================================================
 - name: Provision Jenkins Server
   hosts: jenkins
   become: yes
-
   tasks:
     - name: Install Jenkins dependencies
       yum:
         name:
           - java-21-amazon-corretto-devel
-          - java-17-amazon-corretto-devel
-          - java-11-amazon-corretto-devel
           - git
           - maven
           - wget
-          - unzip
         state: present
 
     - name: Download Jenkins RedHat repository file
@@ -37,13 +74,25 @@
         name: jenkins
         state: present
 
-    - name: Force Jenkins to use Java 21
+    - name: Create systemd override directory for Jenkins
+      file:
+        path: /etc/systemd/system/jenkins.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure Jenkins to use minimal memory and set Java paths
       copy:
         dest: /etc/systemd/system/jenkins.service.d/override.conf
         content: |
           [Service]
+          Environment="JAVA_OPTS=-Xmx512m -Xms256m -XX:+UseG1GC"
           Environment="JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto.x86_64"
           Environment="JENKINS_JAVA_CMD=/usr/lib/jvm/java-21-amazon-corretto.x86_64/bin/java"
+        owner: root
+        group: root
+        mode: '0644'
 
     - name: Start and enable Jenkins service
       systemd:
@@ -57,12 +106,11 @@
         msg: "Jenkins password: sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
 
 # ==============================================================================
-# PLAY 2: PROVISION SONARQUBE
+# PLAY 3: PROVISION SONARQUBE
 # ==============================================================================
 - name: Provision SonarQube Server
   hosts: sonarqube
   become: yes
-
   tasks:
     - name: Configure kernel parameters for Elasticsearch
       sysctl:
@@ -131,6 +179,16 @@
         group: sonar
         recurse: yes
 
+    - name: Optimize SonarQube and Elasticsearch heap sizes for low memory
+      replace:
+        path: /opt/sonarqube/conf/sonar.properties
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: '#sonar.web.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.web.javaOpts=-Xmx384m -Xms128m' }
+        - { regexp: '#sonar.search.javaOpts=-Xmx512m -Xms512m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.search.javaOpts=-Xmx256m -Xms128m' }
+        - { regexp: '#sonar.ce.javaOpts=-Xmx512m -Xms128m -XX:\+HeapDumpOnOutOfMemoryError', replace: 'sonar.ce.javaOpts=-Xmx256m -Xms128m' }
+
     - name: Create SonarQube systemd service
       copy:
         dest: /etc/systemd/system/sonarqube.service
@@ -162,12 +220,11 @@
         enabled: yes
 
 # ==============================================================================
-# PLAY 3: PROVISION TOMCAT
+# PLAY 4: PROVISION TOMCAT
 # ==============================================================================
 - name: Provision Tomcat Application Server
   hosts: tomcat
   become: yes
-
   tasks:
     - name: Install Tomcat dependencies
       yum:
@@ -276,6 +333,7 @@
           Environment=CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid
           Environment=CATALINA_HOME=/usr/local/tomcat
           Environment=CATALINA_BASE=/usr/local/tomcat
+          Environment="CATALINA_OPTS=-Xmx512m -Xms256m -XX:+UseG1GC"
           ExecStart=/usr/local/tomcat/bin/startup.sh
           ExecStop=/usr/local/tomcat/bin/shutdown.sh
           User=tomcat
